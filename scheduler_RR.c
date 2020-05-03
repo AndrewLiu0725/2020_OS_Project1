@@ -8,79 +8,134 @@
 #include "scheduler.h"
 #include "process.h"
 
+// Defien operations about queue
+#define CAPACITY 20
+Process** queue; 
+unsigned int size  = 0;
+unsigned int rear  = CAPACITY - 1;   // Initally assumed that rear is at end
+unsigned int front = 0;
+
+int enqueue(Process*);
+Process* dequeue();
+int isFull();
+int isEmpty();
+
+int enqueue(Process* proc){
+    // Queue is full throw Queue out of capacity error.
+    if (isFull()) {
+		printf("Error: queue is full!");
+        return 0;
+    }
+    // Ensure rear never crosses array bounds
+    rear = (rear + 1) % CAPACITY;
+    // Increment queue size
+    size++;
+    // Enqueue new element to queue
+    queue[rear] = proc;
+    // Successfully enqueued element to queue
+    return 1;
+}
+
+Process* dequeue(){
+    // Queue is empty, throw Queue underflow error
+    if (isEmpty()){
+        return NULL;
+    }
+
+    // Dequeue element from queue
+    Process* proc = queue[front];
+
+    // Ensure front never crosses array bounds
+    front = (front + 1) % CAPACITY;
+
+    // Decrease queue size
+    size--;
+
+    return proc;
+}
+
+int isFull(){
+    return (size == CAPACITY);
+}
+
+int isEmpty(){
+    return (size == 0);
+}
+
 int scheduler_RR(Process *proc, int N_procs){
-	int N_fin = 0; //number of finished processes
-	int cur_time = 0; //current time
+	queue = malloc(CAPACITY * sizeof(Process*)); // Initialize the queue
+	int N_fin = 0; // number of finished processes
+	int cur_t = 0; // current time
+	int rh = 0;    // ready head
+ 	Process* last_process = NULL; // In the first place, there is no unfinished process
 
 	while(1){
-		int nt = 0; // number of processes not allowed to be executed
-		int next_ex_t = INT_MAX; //the closest ready time from current time (used when nt == N_procs)
+		// Maintain the waiting queue after each iteration
+		// Enqueue the process which were ready in the last iteration
+		while(cur_t >= proc[rh].ready_time && rh < N_procs){
+			enqueue(&proc[rh]);
+			rh++;
+		}
+		// Enqueue last run unfinished process
+		if(last_process != NULL) enqueue(last_process);
 
-        // loop through each process
-		for(int i = 0; i < N_procs; i++){
-			
-			// Note that we alrealy sorted the processes according to their ready times
 
-			// The process is not ready yet
-			if( cur_time < proc[i].ready_time ){
-				if( proc[i].ready_time < next_ex_t ) next_ex_t = proc[i].ready_time; // update the closest ready time if necessary
-				nt ++; // increment the number of processes not allowed to be executed since this process cannot be executed right now
-				continue;
+		// Run the first in process for 1 time quantum if there is process in the waiting queue
+		// if there is no waiting process, jump to the next if block
+		if(!isEmpty()){
+			Process* process = dequeue();
+			if( process -> pid > 0 ){
+				proc_exec( process -> pid );
+			}else{
+				process -> pid = proc_create(*process);
+				proc_exec( process -> pid );
 			}
 
-			// The process is finished
-			else if( proc[i].exec_time <= 0 ){
-				nt ++; // increment the number of processes not allowed to be executed since this process is finished
-				continue;
-			} 
-
-            // The process is ready and not finished yet
-            // if the process has been created
-			if( proc[i].pid > 0 ){
-				proc_exec( proc[i].pid );
-			}
-			// if process hasn't been created (initialized pid is -1)
-			else{ 
-				proc[i].pid = proc_create( proc[i] );
-				proc_exec( proc[i].pid );
-			}
-
-			// run an time quantum which is 500 time units in this project
-			int kt = RR_SLICE;
-			while( proc[i].exec_time > 0 && kt > 0){
-				write(proc[i].pipe_fd[1], "run", strlen("run")); // tell process to run 1 time unit
-				TIME_UNIT();
+			int kt = 500; //time quantum for RR
+			// Run for one time quantum
+			while( process -> exec_time > 0 && kt > 0){
+				write(process -> pipe_fd[1], "run", strlen("run")); // tell process to run 1 time unit
+				TIME_UNIT(); // run 1 time unit itself
+                /* decrement time slice, process execution time 
+                   and increment current time */
 				kt --;
-				proc[i].exec_time --;
-				cur_time ++;
+				process -> exec_time --;
+				cur_t ++;
 			}
 
-			// if process is finished
-			if(proc[i].exec_time <= 0){
+			// if the process is finished, receive its exit status
+			if(process -> exec_time <= 0){
 				int re_status;
-				waitpid(proc[i].pid, &re_status, 0);
+				waitpid(process -> pid, &re_status, 0);
 				if( !(WIFEXITED(re_status)) ){
 					perror("error: child process terminated inappropriately");
 					return 1;
 				}
-				N_fin ++; // increment number of process finished
-
-            // if the process have not yet finished (time slice used up)
-			}else{
-				proc_remove( proc[i].pid );				
+                /* increment number of process finished */
+				N_fin ++;
+				last_process = NULL;
 			}
-
+			
+			// if the process has not yet finished (time slice used up) 
+			else{
+				proc_remove( process -> pid );	
+				last_process = process;			
+			}
 		}
 
-		if( N_fin >= N_procs ) break;
-
-        /* # of processes that can not run >= # of processes */
-		if( nt >= N_procs){ 
-            // loop until a process is ready
-			while( cur_time < next_ex_t ){ 
+		// There is no process in waiting queue && there is still unready process && the previous process is finished
+		if (isEmpty() && (rh < N_procs) && (last_process == NULL)){
+			// this loop will run if there is no process ready in the last time quantum
+			while(cur_t < proc[rh].ready_time){
+				// loop until a process is ready, i.e. until cur_t = proc[rh].ready_time
 				TIME_UNIT();
-				cur_time ++;
+				cur_t ++;
 			}
+		}
+
+		// return when all processes are finished
+		if(N_fin >= N_procs){
+			break;
 		}
 	}
 	return 0;
